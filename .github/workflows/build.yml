@@ -1,0 +1,100 @@
+name: Build & Release
+
+# Runs on every push / pull request to main (build check only),
+# and creates a GitHub Release with RatCheck.exe when you push a tag like v1.0.0.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create releases
+  id-token: write        # build provenance (attestation)
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Work out version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $v = "0.0.0-dev.${{ github.run_number }}"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
+
+      - name: Publish single-file exe
+        shell: pwsh
+        run: >
+          dotnet publish RatCheck.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o publish
+
+      - name: Compute SHA-256
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash publish/RatCheck.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  RatCheck.exe" | Out-File -Encoding ascii publish/RatCheck.exe.sha256
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA-256: $h"
+
+      # Uploaded on every run so you can download test builds from the Actions tab
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RatCheck-${{ steps.ver.outputs.version }}
+          path: |
+            publish/RatCheck.exe
+            publish/RatCheck.exe.sha256
+
+      # Proves the exe was built by this workflow from this repo's source
+      - name: Attest build provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: publish/RatCheck.exe
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: RatCheck ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            publish/RatCheck.exe
+            publish/RatCheck.exe.sha256
+          body: |
+            ## Download
+            Grab **RatCheck.exe** below, double-click it and accept the UAC prompt.
+
+            Windows may show **"Windows protected your PC"** because the exe isn't code-signed yet.
+            Click **More info → Run anyway**. See the README for why.
+
+            ## Verify your download
+            - **SHA-256:** `${{ steps.hash.outputs.sha256 }}`
+            - **VirusTotal:** _link coming soon_
+            - **Built by GitHub Actions** from this exact commit: [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            - Verify provenance: `gh attestation verify RatCheck.exe -R ${{ github.repository }}`

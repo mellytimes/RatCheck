@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+publish/
+*.exe
+*.pdb
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Saved reports
+RatCheck_*.txt
